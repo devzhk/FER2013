@@ -1,4 +1,4 @@
 - Resnet18: 72.3
 - Resnet34: 
-- VGG13: Public-70.242; Private-71.663
+- VGG13: Public-70.242; Private-71.886
 - VGG19: 
