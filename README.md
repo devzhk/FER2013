@@ -5,3 +5,5 @@ python main.py --model VGG13 --bs 64
 python eval.py
 - To apply adversarial attack and defense: 
 python FGSM.py
+- To plot confusion matrix: 
+python plotcm.py
