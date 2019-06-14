@@ -14,6 +14,8 @@ from fer import FER2013
 from torch.autograd import Variable
 from models import *
 from torchvision.models import resnet50
+from tensorboardX import SummaryWriter
+
 
 parser = argparse.ArgumentParser(description='PyTorch Fer2013 CNN Training')
 parser.add_argument('--model', type=str, default='VGG19', help='VGG19 ResNet18 34 50')
@@ -31,14 +33,15 @@ best_PrivateTest_acc = 0  # best PrivateTest accuracy
 best_PrivateTest_acc_epoch = 0
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 
-learning_rate_decay_start = 80  # 50
+learning_rate_decay_start = 10  # 50
 learning_rate_decay_every = 5 # 5
 learning_rate_decay_rate = 0.9 # 0.9
 
 cut_size = 44
-total_epoch = 250
-
+total_epoch = 150
+model_num = 2
 path = os.path.join(opt.model)
+use_sgd = False
 
 # Data
 print('==> Preparing data..')
@@ -69,6 +72,10 @@ elif opt.model == 'Resnet34':
     net = ResNet34()
 elif opt.model == 'Resnet50':
     net = ResNet50()
+elif opt.model == 'VGG13':
+    net = VGG('VGG13')
+elif opt.model == 'VGG16':
+    net = VGG('VGG16')
 
 if opt.resume:
     # Load checkpoint.
@@ -88,7 +95,9 @@ else:
 net.to(device)
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=opt.lr, momentum=0.9, weight_decay=5e-4)
+optimizer = optim.SGD(net.parameters(), lr=opt.lr, momentum=0.9, weight_decay=5e-4) if use_sgd else optim.Adam(net.parameters())
+
+writer = SummaryWriter()
 
 
 # Training
@@ -99,15 +108,15 @@ def train(epoch):
     train_loss = 0
     correct = 0
     total = 0
-
-    if epoch > learning_rate_decay_start and learning_rate_decay_start >= 0:
-        frac = (epoch - learning_rate_decay_start) // learning_rate_decay_every
-        decay_factor = learning_rate_decay_rate ** frac
-        current_lr = opt.lr * decay_factor
-        utils.set_lr(optimizer, current_lr)  # set the decayed rate
-    else:
-        current_lr = opt.lr
-    print('learning_rate: %s' % str(current_lr))
+    if use_sgd:
+        if epoch > learning_rate_decay_start and learning_rate_decay_start >= 0:
+            frac = (epoch - learning_rate_decay_start) // learning_rate_decay_every
+            decay_factor = learning_rate_decay_rate ** frac
+            current_lr = opt.lr * decay_factor
+            utils.set_lr(optimizer, current_lr)  # set the decayed rate
+        else:
+            current_lr = opt.lr
+        print('learning_rate: %s' % str(current_lr))
 
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
@@ -116,17 +125,20 @@ def train(epoch):
         outputs = net(inputs)
         loss = criterion(outputs, targets)
         loss.backward()
-        utils.clip_gradient(optimizer, 0.1)
+        if use_sgd:
+            utils.clip_gradient(optimizer, 0.1)
         optimizer.step()
         train_loss += loss.item()
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
-        correct += predicted.eq(targets.data).cpu().sum()
-
+        correct += (predicted == targets).sum().item()
         utils.progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-            % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
+            % (train_loss/(batch_idx+1), 100. * correct / total , correct, total))
 
-    Train_acc = 100.*correct/total
+    Train_acc = 100. * correct / total
+    # print(Train_acc)
+    writer.add_scalars('Loss', {'train': train_loss / len(trainloader)}, epoch)
+    writer.add_scalars('Accuracy', {'train': Train_acc}, epoch)
 
 
 def PublicTest(epoch):
@@ -148,13 +160,15 @@ def PublicTest(epoch):
         PublicTest_loss += loss.item()
         _, predicted = torch.max(outputs_avg.data, 1)
         total += targets.size(0)
-        correct += predicted.eq(targets.data).cpu().sum()
 
+        correct += (predicted == targets).sum().item()
         utils.progress_bar(batch_idx, len(PublicTestloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
                            % (PublicTest_loss / (batch_idx + 1), 100. * correct / total, correct, total))
 
     # Save checkpoint.
     PublicTest_acc = 100.*correct/total
+    writer.add_scalars('Loss', {'PublicTest': PublicTest_loss / len(PublicTestloader)}, epoch)
+    writer.add_scalars('Accuracy', {'PublicTest': PublicTest_acc}, epoch)
     if PublicTest_acc > best_PublicTest_acc:
         print('Saving..')
         print("best_PublicTest_acc: %0.3f" % PublicTest_acc)
@@ -165,7 +179,7 @@ def PublicTest(epoch):
         }
         if not os.path.isdir(path):
             os.mkdir(path)
-        torch.save(state, os.path.join(path, 'PublicTest_model6.t7'))
+        torch.save(state, os.path.join(path, 'PublicTest_model%d.t7' % model_num))
         best_PublicTest_acc = PublicTest_acc
         best_PublicTest_acc_epoch = epoch
 
@@ -189,12 +203,14 @@ def PrivateTest(epoch):
         PrivateTest_loss += loss.item()
         _, predicted = torch.max(outputs_avg.data, 1)
         total += targets.size(0)
-        correct += predicted.eq(targets.data).cpu().sum()
 
+        correct += (predicted == targets).sum().item()
         utils.progress_bar(batch_idx, len(PublicTestloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
             % (PrivateTest_loss / (batch_idx + 1), 100. * correct / total, correct, total))
     # Save checkpoint.
     PrivateTest_acc = 100.*correct/total
+    writer.add_scalars('Loss', {'PrivateTest': PrivateTest_loss / len(PrivateTestloader)}, epoch)
+    writer.add_scalars('Accuracy', {'PrivateTest': PrivateTest_acc}, epoch)
 
     if PrivateTest_acc > best_PrivateTest_acc:
         print('Saving..')
@@ -208,7 +224,7 @@ def PrivateTest(epoch):
         }
         if not os.path.isdir(path):
             os.mkdir(path)
-        torch.save(state, os.path.join(path, 'PrivateTest_model6.t7'))
+        torch.save(state, os.path.join(path, 'PrivateTest_model%d.t7' % model_num))
         best_PrivateTest_acc = PrivateTest_acc
         best_PrivateTest_acc_epoch = epoch
 
